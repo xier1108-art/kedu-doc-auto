@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# 개발 임시
+_*.py
+_*.txt
+_*.json
+
+# 패키징 산출물
+dist/
+build/
+*.zip
+
+# 받는 사람마다 다른 — 절대 공유 금지
+# (각 PC 의 %USERPROFILE% 에 저장되니 프로젝트 폴더엔 안 들어옴)
+# 혹시라도 폴더에 들어왔으면 빼기:
+.kedu_anthropic_key
+.kedu_user.json
+.kedu_taskcard.json
+
+# IDE
+.vscode/
+.idea/
+.claude/
