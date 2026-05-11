@@ -27,7 +27,8 @@ except ImportError:
 
 from ai_extract import (
     extract_smart, get_api_key, save_api_key,
-    AVAILABLE_MODELS, get_model_key, save_model_key,
+    list_available_models, get_model, save_model_id,
+    get_model_label, TIER_HINT,
 )
 from auto_fill import apply_defaults, apply_pdf, apply_taskcard
 from wxs_form import WXSForm
@@ -155,10 +156,9 @@ class App:
         vision_ok = ollama_available(OLLAMA_MODEL)
         backend = self.backend_var.get()
         # 현재 Claude 모델
-        model_key = get_model_key()
-        model_name = AVAILABLE_MODELS[model_key][1]
+        model_label = get_model_label()
         parts = []
-        parts.append(f"☁ Claude: {'활성 ['+model_name+']' if key else '미설정'}")
+        parts.append(f"☁ Claude: {'활성 ['+model_label+']' if key else '미설정'}")
         parts.append(f"📷 OCR+LLM: {'활성' if ocr_ok else '비활성'}")
         parts.append(f"👁 Vision: {'활성' if vision_ok else '비활성'}")
         active = {
@@ -375,7 +375,7 @@ class App:
     def open_settings(self):
         win = tk.Toplevel(self.root)
         win.title("Claude API 설정")
-        win.geometry("620x420")
+        win.geometry("680x520")
         win.transient(self.root)
         win.grab_set()
 
@@ -383,7 +383,7 @@ class App:
         ttk.Label(win, text="Anthropic API 키", font=("맑은 고딕", 11, "bold")).pack(pady=(14, 4))
         ttk.Label(win, text="https://console.anthropic.com/settings/keys 에서 발급",
                   foreground="gray").pack()
-        entry = ttk.Entry(win, width=70, show="*")
+        entry = ttk.Entry(win, width=80, show="*")
         entry.pack(pady=10, padx=20, fill=tk.X)
         existing = get_api_key()
         if existing:
@@ -396,19 +396,63 @@ class App:
         ttk.Separator(win, orient="horizontal").pack(fill=tk.X, padx=20, pady=12)
 
         # ── 모델 선택 섹션 ──
-        ttk.Label(win, text="모델 선택 (비용 vs 정확도)", font=("맑은 고딕", 11, "bold")).pack(pady=(0, 4))
+        ttk.Label(win, text="Claude 모델", font=("맑은 고딕", 11, "bold")).pack(pady=(0, 4))
+        ttk.Label(win, text="사용 가능한 모델 — 새로고침 시 본인 키로 사용 가능한 최신 목록을 가져옵니다",
+                  foreground="gray", font=("맑은 고딕", 9)).pack()
 
-        model_var = tk.StringVar(value=get_model_key())
-        for key, (_, name, desc) in AVAILABLE_MODELS.items():
-            frame = ttk.Frame(win)
-            frame.pack(fill=tk.X, padx=30, pady=2, anchor=tk.W)
-            ttk.Radiobutton(frame, text=name, variable=model_var, value=key).pack(side=tk.LEFT)
-            ttk.Label(frame, text=f"— {desc}", foreground="#555",
-                      font=("맑은 고딕", 9)).pack(side=tk.LEFT, padx=4)
+        # 콤보박스 + 새로고침 버튼
+        combo_row = ttk.Frame(win)
+        combo_row.pack(fill=tk.X, padx=20, pady=8)
+
+        # 초기 모델 목록 (캐시 또는 fallback)
+        current_models = list_available_models(refresh=False)
+        # tier 순서: opus → sonnet → haiku
+        tier_order = {"opus": 0, "sonnet": 1, "haiku": 2}
+        current_models.sort(key=lambda m: (tier_order.get(m["tier"], 9), m["id"]))
+
+        def _format(m: dict) -> str:
+            tier_hint = TIER_HINT.get(m["tier"], "")
+            return f"{m['name']:25s}  ({m['id']})  — {tier_hint}"
+
+        combo = ttk.Combobox(combo_row, width=85, state="readonly")
+        combo["values"] = [_format(m) for m in current_models]
+        # 현재 선택된 모델 위치
+        cur_id = get_model()
+        cur_idx = next((i for i, m in enumerate(current_models) if m["id"] == cur_id), 0)
+        combo.current(cur_idx)
+        combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        # 상태 라벨 (새로고침 결과)
+        status = ttk.Label(win, text="", foreground="gray", font=("맑은 고딕", 9))
+        status.pack(pady=(2, 0))
+
+        def refresh_models():
+            status.config(text="API 호출 중…", foreground="#06a")
+            win.update_idletasks()
+            try:
+                new_models = list_available_models(refresh=True)
+                new_models.sort(key=lambda m: (tier_order.get(m["tier"], 9), m["id"]))
+                # combo 갱신
+                nonlocal current_models
+                current_models = new_models
+                combo["values"] = [_format(m) for m in new_models]
+                cur_idx2 = next((i for i, m in enumerate(new_models) if m["id"] == cur_id), 0)
+                combo.current(cur_idx2)
+                status.config(text=f"✓ {len(new_models)} 개 모델 발견 — 캐시 갱신됨", foreground="#0a7")
+            except Exception as e:
+                status.config(text=f"✗ 새로고침 실패: {e}", foreground="#a40")
+
+        ttk.Button(combo_row, text="🔄 새로고침", command=refresh_models).pack(side=tk.LEFT, padx=6)
+
+        # tier 안내
+        ttk.Label(win, text="모델별 특성:", font=("맑은 고딕", 10, "bold")).pack(pady=(10, 2))
+        for tier, desc in TIER_HINT.items():
+            ttk.Label(win, text=f"  • {tier.capitalize()}: {desc}",
+                      foreground="#555", font=("맑은 고딕", 9)).pack(anchor=tk.W, padx=30)
 
         ttk.Label(win,
                   text="설정은 %USERPROFILE%\\.kedu_anthropic_model 에 저장됩니다.",
-                  foreground="gray", font=("맑은 고딕", 9)).pack(pady=(8, 0))
+                  foreground="gray", font=("맑은 고딕", 9)).pack(pady=(10, 0))
 
         def save():
             # API 키
@@ -419,8 +463,12 @@ class App:
                     return
                 save_api_key(k)
             # 모델
+            sel = combo.current()
+            if sel < 0 or sel >= len(current_models):
+                messagebox.showwarning("선택 오류", "모델을 선택해주세요.")
+                return
             try:
-                save_model_key(model_var.get())
+                save_model_id(current_models[sel]["id"])
             except Exception as e:
                 messagebox.showwarning("모델 저장 실패", str(e))
                 return

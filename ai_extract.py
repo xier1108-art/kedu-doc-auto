@@ -24,43 +24,112 @@ from pathlib import Path
 from pdf_parser import DocMeta
 
 KEY_PATH = Path.home() / ".kedu_anthropic_key"
-MODEL_PATH = Path.home() / ".kedu_anthropic_model"
+MODEL_PATH = Path.home() / ".kedu_anthropic_model"          # 선택된 모델 id 저장
+MODELS_CACHE_PATH = Path.home() / ".kedu_anthropic_models.json"  # 동적 fetch 캐시
 
-# 사용 가능한 모델 — GUI 에서 선택. key → (api_id, 표시명, 비용 안내)
-AVAILABLE_MODELS: dict[str, tuple[str, str, str]] = {
-    "sonnet": (
-        "claude-sonnet-4-5-20250929",
-        "Sonnet 4.5",
-        "정확도 ★★★★★, 스캔 PDF OCR 안정, PDF 1건당 ~10원 (권장)",
-    ),
-    "haiku": (
-        "claude-haiku-4-5-20251001",
-        "Haiku 4.5",
-        "정확도 ★★★, PDF 1건당 ~1원, 디지털 PDF 적합 (스캔 시 환각 가능)",
-    ),
+# Fallback 모델 목록 (API 호출 실패 시 사용)
+# Anthropic 이 출시한 주요 모델들 — 실제 사용 가능 여부는 API 가 결정
+_FALLBACK_MODELS: list[dict] = [
+    {"id": "claude-opus-4-7",                "name": "Claude Opus 4.7",    "tier": "opus"},
+    {"id": "claude-sonnet-4-6",              "name": "Claude Sonnet 4.6",  "tier": "sonnet"},
+    {"id": "claude-opus-4-6",                "name": "Claude Opus 4.6",    "tier": "opus"},
+    {"id": "claude-opus-4-5-20251101",       "name": "Claude Opus 4.5",    "tier": "opus"},
+    {"id": "claude-haiku-4-5-20251001",      "name": "Claude Haiku 4.5",   "tier": "haiku"},
+    {"id": "claude-sonnet-4-5-20250929",     "name": "Claude Sonnet 4.5",  "tier": "sonnet"},
+]
+
+# 기본값 — 첫 사용 시. 정확도 / 비용 균형
+DEFAULT_MODEL = "claude-sonnet-4-5-20250929"
+
+
+def _tier_of(model_id: str) -> str:
+    """모델 id 에서 tier 추론 (opus/sonnet/haiku)."""
+    mid = model_id.lower()
+    for t in ("opus", "sonnet", "haiku"):
+        if t in mid:
+            return t
+    return "?"
+
+
+# 모델 tier 별 안내 (사용자에게 비용 감각)
+TIER_HINT: dict[str, str] = {
+    "opus":   "최고 정확도 / 비싼 (~50원/PDF 추정)",
+    "sonnet": "균형 (정확 + 합리적 비용, ~10원/PDF)",
+    "haiku":  "저렴 / 빠른 (~1원/PDF, 디지털 PDF 적합)",
 }
-DEFAULT_MODEL_KEY = "sonnet"  # 기본 = Sonnet 4.5
-DEFAULT_MODEL = AVAILABLE_MODELS[DEFAULT_MODEL_KEY][0]
 
 
-def get_model_key() -> str:
-    """저장된 모델 키 또는 기본값."""
-    if MODEL_PATH.exists():
-        k = MODEL_PATH.read_text(encoding="utf-8").strip()
-        if k in AVAILABLE_MODELS:
-            return k
-    return DEFAULT_MODEL_KEY
+def list_available_models(refresh: bool = False) -> list[dict]:
+    """사용자 키로 사용 가능한 모델 목록.
+
+    - refresh=True: API 호출해서 최신 목록 가져와 캐시 저장
+    - refresh=False: 캐시 있으면 사용, 없으면 fallback
+    """
+    if refresh:
+        key = get_api_key()
+        if not key:
+            return list(_FALLBACK_MODELS)
+        try:
+            import anthropic
+            client = anthropic.Anthropic(api_key=key)
+            resp = client.models.list(limit=50)
+            models = [
+                {
+                    "id": m.id,
+                    "name": getattr(m, "display_name", m.id),
+                    "tier": _tier_of(m.id),
+                }
+                for m in resp.data
+            ]
+            MODELS_CACHE_PATH.write_text(
+                json.dumps(models, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            return models
+        except Exception:
+            # API 호출 실패 시 캐시 또는 fallback
+            pass
+    # 캐시 우선
+    if MODELS_CACHE_PATH.exists():
+        try:
+            return json.loads(MODELS_CACHE_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return list(_FALLBACK_MODELS)
 
 
 def get_model() -> str:
-    """저장된 모델의 API id 반환."""
-    return AVAILABLE_MODELS[get_model_key()][0]
+    """저장된 모델 id (없으면 DEFAULT)."""
+    if MODEL_PATH.exists():
+        v = MODEL_PATH.read_text(encoding="utf-8").strip()
+        if v:
+            return v
+    return DEFAULT_MODEL
 
 
-def save_model_key(key: str) -> None:
-    if key not in AVAILABLE_MODELS:
-        raise ValueError(f"Unknown model key: {key}")
-    MODEL_PATH.write_text(key, encoding="utf-8")
+def get_model_label() -> str:
+    """현재 선택된 모델의 사람 친화 표시명 (예: 'Sonnet 4.5')."""
+    mid = get_model()
+    for m in list_available_models():
+        if m["id"] == mid:
+            # 'Claude Sonnet 4.5' → 'Sonnet 4.5'
+            return m["name"].replace("Claude ", "")
+    return mid
+
+
+def save_model_id(model_id: str) -> None:
+    """사용자가 선택한 모델 id 저장."""
+    if not model_id:
+        raise ValueError("model_id 가 비어있음")
+    MODEL_PATH.write_text(model_id, encoding="utf-8")
+
+
+# 하위 호환 — gui.py 가 import 하던 이름들
+AVAILABLE_MODELS = {  # 더 이상 사용 안 하지만 import 호환용
+    m["id"]: (m["id"], m["name"], TIER_HINT.get(m["tier"], ""))
+    for m in _FALLBACK_MODELS
+}
+get_model_key = get_model           # alias (구 API)
+save_model_key = save_model_id      # alias (구 API)
 
 
 def get_api_key() -> str | None:
