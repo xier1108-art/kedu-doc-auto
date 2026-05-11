@@ -24,9 +24,43 @@ from pathlib import Path
 from pdf_parser import DocMeta
 
 KEY_PATH = Path.home() / ".kedu_anthropic_key"
-# Haiku 는 한국어 스캔 PDF OCR 에서 환각/누락이 종종 발생 (예: 수신자 줄)
-# → Sonnet 4.5 사용. 비용은 ~10x 늘지만 (PDF 1건당 ~10원), 정확도 ↑↑
-DEFAULT_MODEL = "claude-sonnet-4-5-20250929"
+MODEL_PATH = Path.home() / ".kedu_anthropic_model"
+
+# 사용 가능한 모델 — GUI 에서 선택. key → (api_id, 표시명, 비용 안내)
+AVAILABLE_MODELS: dict[str, tuple[str, str, str]] = {
+    "sonnet": (
+        "claude-sonnet-4-5-20250929",
+        "Sonnet 4.5",
+        "정확도 ★★★★★, 스캔 PDF OCR 안정, PDF 1건당 ~10원 (권장)",
+    ),
+    "haiku": (
+        "claude-haiku-4-5-20251001",
+        "Haiku 4.5",
+        "정확도 ★★★, PDF 1건당 ~1원, 디지털 PDF 적합 (스캔 시 환각 가능)",
+    ),
+}
+DEFAULT_MODEL_KEY = "sonnet"  # 기본 = Sonnet 4.5
+DEFAULT_MODEL = AVAILABLE_MODELS[DEFAULT_MODEL_KEY][0]
+
+
+def get_model_key() -> str:
+    """저장된 모델 키 또는 기본값."""
+    if MODEL_PATH.exists():
+        k = MODEL_PATH.read_text(encoding="utf-8").strip()
+        if k in AVAILABLE_MODELS:
+            return k
+    return DEFAULT_MODEL_KEY
+
+
+def get_model() -> str:
+    """저장된 모델의 API id 반환."""
+    return AVAILABLE_MODELS[get_model_key()][0]
+
+
+def save_model_key(key: str) -> None:
+    if key not in AVAILABLE_MODELS:
+        raise ValueError(f"Unknown model key: {key}")
+    MODEL_PATH.write_text(key, encoding="utf-8")
 
 
 def get_api_key() -> str | None:
@@ -180,14 +214,17 @@ def _truncate_pdf_if_needed(pdf_path: Path, max_pages: int = CLAUDE_MAX_PAGES,
         return truncated
 
 
-def extract_with_claude(pdf_path: Path, model: str = DEFAULT_MODEL) -> DocMeta | None:
+def extract_with_claude(pdf_path: Path, model: str | None = None) -> DocMeta | None:
     """Claude API로 PDF 메타데이터 추출. 키가 없으면 None 반환.
 
     PDF 가 100페이지/32MB 초과 시 자동으로 첫 5페이지로 잘라서 전송.
+    model 지정 안 하면 사용자 저장 모델(없으면 기본=Sonnet) 사용.
     """
     key = get_api_key()
     if not key:
         return None
+    if model is None:
+        model = get_model()
 
     import anthropic
     client = anthropic.Anthropic(api_key=key)

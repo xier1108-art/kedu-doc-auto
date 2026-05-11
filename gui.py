@@ -25,7 +25,10 @@ try:
 except ImportError:
     HAS_DND = False
 
-from ai_extract import extract_smart, get_api_key, save_api_key
+from ai_extract import (
+    extract_smart, get_api_key, save_api_key,
+    AVAILABLE_MODELS, get_model_key, save_model_key,
+)
 from auto_fill import apply_defaults, apply_pdf, apply_taskcard
 from wxs_form import WXSForm
 
@@ -151,8 +154,11 @@ class App:
         ocr_ok = ocr_available()
         vision_ok = ollama_available(OLLAMA_MODEL)
         backend = self.backend_var.get()
+        # 현재 Claude 모델
+        model_key = get_model_key()
+        model_name = AVAILABLE_MODELS[model_key][1]
         parts = []
-        parts.append(f"☁ Claude: {'활성' if key else '미설정'}")
+        parts.append(f"☁ Claude: {'활성 ['+model_name+']' if key else '미설정'}")
         parts.append(f"📷 OCR+LLM: {'활성' if ocr_ok else '비활성'}")
         parts.append(f"👁 Vision: {'활성' if vision_ok else '비활성'}")
         active = {
@@ -368,15 +374,16 @@ class App:
 
     def open_settings(self):
         win = tk.Toplevel(self.root)
-        win.title("Anthropic API 키 설정")
-        win.geometry("520x240")
+        win.title("Claude API 설정")
+        win.geometry("620x420")
         win.transient(self.root)
         win.grab_set()
 
+        # ── API 키 섹션 ──
         ttk.Label(win, text="Anthropic API 키", font=("맑은 고딕", 11, "bold")).pack(pady=(14, 4))
         ttk.Label(win, text="https://console.anthropic.com/settings/keys 에서 발급",
                   foreground="gray").pack()
-        entry = ttk.Entry(win, width=60, show="*")
+        entry = ttk.Entry(win, width=70, show="*")
         entry.pack(pady=10, padx=20, fill=tk.X)
         existing = get_api_key()
         if existing:
@@ -385,18 +392,44 @@ class App:
         ttk.Label(win, text="키는 %USERPROFILE%\\.kedu_anthropic_key 에 저장됩니다.",
                   foreground="gray", font=("맑은 고딕", 9)).pack()
 
+        # ── 구분선 ──
+        ttk.Separator(win, orient="horizontal").pack(fill=tk.X, padx=20, pady=12)
+
+        # ── 모델 선택 섹션 ──
+        ttk.Label(win, text="모델 선택 (비용 vs 정확도)", font=("맑은 고딕", 11, "bold")).pack(pady=(0, 4))
+
+        model_var = tk.StringVar(value=get_model_key())
+        for key, (_, name, desc) in AVAILABLE_MODELS.items():
+            frame = ttk.Frame(win)
+            frame.pack(fill=tk.X, padx=30, pady=2, anchor=tk.W)
+            ttk.Radiobutton(frame, text=name, variable=model_var, value=key).pack(side=tk.LEFT)
+            ttk.Label(frame, text=f"— {desc}", foreground="#555",
+                      font=("맑은 고딕", 9)).pack(side=tk.LEFT, padx=4)
+
+        ttk.Label(win,
+                  text="설정은 %USERPROFILE%\\.kedu_anthropic_model 에 저장됩니다.",
+                  foreground="gray", font=("맑은 고딕", 9)).pack(pady=(8, 0))
+
         def save():
+            # API 키
             k = entry.get().strip()
-            if not k.startswith("sk-ant-"):
-                messagebox.showwarning("형식 오류", "Anthropic 키는 'sk-ant-' 로 시작합니다.")
+            if k:
+                if not k.startswith("sk-ant-"):
+                    messagebox.showwarning("형식 오류", "Anthropic 키는 'sk-ant-' 로 시작합니다.")
+                    return
+                save_api_key(k)
+            # 모델
+            try:
+                save_model_key(model_var.get())
+            except Exception as e:
+                messagebox.showwarning("모델 저장 실패", str(e))
                 return
-            save_api_key(k)
             self._update_api_status()
-            messagebox.showinfo("완료", "API 키가 저장되었습니다.")
+            messagebox.showinfo("완료", "설정이 저장되었습니다.")
             win.destroy()
 
         bf = ttk.Frame(win)
-        bf.pack(pady=10)
+        bf.pack(pady=14)
         ttk.Button(bf, text="저장", command=save).pack(side=tk.LEFT, padx=5)
         ttk.Button(bf, text="취소", command=win.destroy).pack(side=tk.LEFT, padx=5)
 
