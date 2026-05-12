@@ -72,13 +72,25 @@ install.bat
 ## 옵션 D: 단일 EXE 배포 (받는 사람이 Python/개발도구 미설치) ⭐ 추천
 
 받는 사람의 PC 에 **Python, Node.js 등 어떤 개발 도구도 없을 때** 최선.
-EXE 한 파일만 더블클릭하면 GUI 가 뜹니다.
+
+### 두 가지 빌드 모드 선택 가능
+
+| 모드 | 명령 | 결과 | 첫 실행 | 두 번째 이후 | 용도 |
+|---|---|---|---|---|---|
+| `--onefile` (기본) | `python build.py` | EXE 단일 파일 (80MB) | 30~60초 | 5~10초 | 보내기 편함 |
+| `--onedir` (빠름) | `python build.py --onedir` | 폴더 ZIP (90MB) | 1~3초 | 1~3초 | 매일 사용 |
 
 ### 보내는 사람 (개발자)
 ```cmd
+# 단일 EXE
 python build.py
+→ dist\비전자문서등록.exe (~80MB)
+
+# 또는 빠른 시작용 폴더 ZIP
+python build.py --onedir
+→ dist\비전자문서등록\ (폴더, ~160MB)
+→ dist\비전자문서등록-fast.zip (~90MB, ZIP 압축)
 ```
-→ `dist\비전자문서등록.exe` (~80MB) 생성. 메일/공유드라이브로 전송.
 
 ### 받는 사람
 1. EXE 다운로드 (Python 설치 불필요!)

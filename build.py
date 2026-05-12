@@ -48,12 +48,14 @@ def main() -> int:
     if BUILD.exists():
         shutil.rmtree(BUILD, ignore_errors=True)
     debug = "--debug" in sys.argv
+    onedir = "--onedir" in sys.argv  # 빠른 시작 모드 (폴더 배포)
     cmd = [
         sys.executable, "-m", "PyInstaller",
         "--noconfirm",
         "--clean",
-        "--onefile",
-        # 디버그 모드는 콘솔 띄워서 에러 메시지 확인
+        # onedir: 매 실행 즉시 시작 (1-3초). 폴더 통째로 배포.
+        # onefile: 단일 EXE. 첫 실행 unpack 시간 30-60초.
+        "--onedir" if onedir else "--onefile",
         "--console" if debug else "--windowed",
         "--name", "비전자문서등록" + ("_debug" if debug else ""),
 
@@ -98,21 +100,45 @@ def main() -> int:
 
     # ── 4) 결과 확인 ──
     step("[4/4] 결과 확인")
-    exe = DIST / "비전자문서등록.exe"
-    if not exe.exists():
-        print(f"[✗] EXE 없음: {exe}")
-        return 1
-    size_mb = exe.stat().st_size / 1024 / 1024
-    print(f"  ✓ {exe}")
-    print(f"  ✓ 크기: {size_mb:.1f} MB")
-    print()
-    print("  📤 이 EXE 한 파일만 보내면 됩니다.")
-    print("     수신자: Python/Node 설치 불필요.")
-    print()
-    print("  ⚠ 단점:")
-    print("    - 오프라인 LLM(Gemma) 비활성 (Ollama 별도 설치 시 활성)")
-    print("    - 오프라인 OCR(EasyOCR) 비활성 (Claude API 키 권장)")
-    print("    - Windows Defender 가 처음에 검사 후 차단할 수 있음 (서명 안 함)")
+    if onedir:
+        out_dir = DIST / "비전자문서등록"
+        if not out_dir.exists():
+            print(f"[✗] 폴더 없음: {out_dir}")
+            return 1
+        # 총 크기 계산
+        total = sum(p.stat().st_size for p in out_dir.rglob("*") if p.is_file())
+        print(f"  ✓ {out_dir} (폴더)")
+        print(f"  ✓ 폴더 총 크기: {total/1024/1024:.1f} MB")
+        # ZIP 으로 압축
+        import zipfile
+        zip_path = DIST / "비전자문서등록-fast.zip"
+        if zip_path.exists():
+            zip_path.unlink()
+        print(f"  ZIP 압축 중…")
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+            for p in out_dir.rglob("*"):
+                if p.is_file():
+                    zf.write(p, p.relative_to(DIST))
+        print(f"  ✓ {zip_path}")
+        print(f"  ✓ ZIP 크기: {zip_path.stat().st_size/1024/1024:.1f} MB")
+        print()
+        print("  ⚡ 빠른 시작 (onedir) 모드:")
+        print("    - 받는 사람: ZIP 풀고 폴더 안의 '비전자문서등록.exe' 더블클릭")
+        print("    - 매 실행 1~3초 (unpack 없음)")
+    else:
+        exe = DIST / "비전자문서등록.exe"
+        if not exe.exists():
+            print(f"[✗] EXE 없음: {exe}")
+            return 1
+        size_mb = exe.stat().st_size / 1024 / 1024
+        print(f"  ✓ {exe}")
+        print(f"  ✓ 크기: {size_mb:.1f} MB")
+        print()
+        print("  📤 이 EXE 한 파일만 보내면 됩니다.")
+        print("     수신자: Python/Node 설치 불필요.")
+        print()
+        print("  ⚠ 단점:")
+        print("    - 첫 실행 unpack 30~60초 (--onedir 모드로 빌드하면 즉시 시작)")
     return 0
 
 
