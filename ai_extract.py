@@ -358,15 +358,13 @@ def _merge_with_filename(meta: DocMeta, p: Path) -> DocMeta:
     return meta
 
 
-def extract_smart(pdf_path: str | Path, prefer: str = "auto") -> DocMeta:
+def extract_smart(pdf_path: str | Path, prefer: str = "claude") -> DocMeta:
     """
-    4-tier fallback chain (속도/정확도 순):
-        1) Claude API           - 최고 품질, 인터넷+키 필요, 1~3초
-        2) OCR + 텍스트 LLM      - 오프라인, EasyOCR + gemma3:4b 텍스트, ~20~40초
-        3) Vision-LLM           - 오프라인, gemma3:4b 이미지 직접, ~150초
-        4) 파일명/본문 정규식    - LLM 없음, 즉시
+    추출 흐름 (v1.0.7 단순화):
+        1) Claude API           - 인터넷+키 필요, 1~3초
+        2) 파일명/본문 정규식    - Claude 실패 시 fallback
 
-    prefer: "auto" | "claude" | "ocr" | "vision" | "regex"
+    prefer: "claude" (기본) | "regex"
     """
     p = Path(pdf_path)
     if not p.exists():
@@ -375,7 +373,7 @@ def extract_smart(pdf_path: str | Path, prefer: str = "auto") -> DocMeta:
     from pdf_parser import extract as regex_extract
 
     # ── Tier 1: Claude API ──
-    if prefer in ("auto", "claude"):
+    if prefer == "claude":
         try:
             meta = extract_with_claude(p)
             if meta:
@@ -383,50 +381,12 @@ def extract_smart(pdf_path: str | Path, prefer: str = "auto") -> DocMeta:
             claude_err = "API 키 미설정"
         except Exception as e:
             claude_err = str(e)
-            if prefer == "claude":
-                meta = regex_extract(p)
-                meta.notes.append(f"Claude 실패, 정규식 fallback: {e}")
-                return meta
     else:
         claude_err = "skipped"
 
-    # ── Tier 2: OCR + 텍스트 LLM (오프라인 빠른 경로) ──
-    if prefer in ("auto", "ocr"):
-        try:
-            from ocr_extract import extract_with_ocr_llm, is_available as ocr_available
-            if ocr_available():
-                meta, stats = extract_with_ocr_llm(p)
-                if meta:
-                    meta.notes.insert(0, f"Claude 미사용: {claude_err}")
-                    return _merge_with_filename(meta, p)
-                ocr_err = stats.get("error", "unknown")
-            else:
-                ocr_err = "Ollama 또는 EasyOCR 사용 불가"
-        except Exception as e:
-            ocr_err = str(e)
-    else:
-        ocr_err = "skipped"
-
-    # ── Tier 3: Vision-LLM (오프라인 느린 경로) ──
-    if prefer in ("auto", "vision"):
-        try:
-            from local_extract import extract_with_ollama, is_available, DEFAULT_MODEL
-            if is_available(DEFAULT_MODEL):
-                meta = extract_with_ollama(p)
-                if meta:
-                    meta.notes.insert(0, f"Claude/OCR 미사용: {claude_err} / {ocr_err}")
-                    return _merge_with_filename(meta, p)
-            vision_err = "Ollama 사용 불가"
-        except Exception as e:
-            vision_err = str(e)
-    else:
-        vision_err = "skipped"
-
-    # ── Tier 4: 정규식 fallback ──
+    # ── Tier 2: 정규식 fallback ──
     meta = regex_extract(p)
-    meta.notes.append(
-        f"LLM 미사용 (Claude: {claude_err}, OCR+LLM: {ocr_err}, Vision: {vision_err})"
-    )
+    meta.notes.append(f"Claude 미사용 ({claude_err}) — 정규식 fallback")
     return meta
 
 

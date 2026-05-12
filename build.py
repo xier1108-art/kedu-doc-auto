@@ -49,6 +49,7 @@ def main() -> int:
         shutil.rmtree(BUILD, ignore_errors=True)
     debug = "--debug" in sys.argv
     onedir = "--onedir" in sys.argv  # 빠른 시작 모드 (폴더 배포)
+    splash_png = PROJECT / "splash.png"
     cmd = [
         sys.executable, "-m", "PyInstaller",
         "--noconfirm",
@@ -58,6 +59,8 @@ def main() -> int:
         "--onedir" if onedir else "--onefile",
         "--console" if debug else "--windowed",
         "--name", "비전자문서등록" + ("_debug" if debug else ""),
+        # splash: 즉시 표시 → 백그라운드에서 Python 시작 → import 끝나면 close
+        *(["--splash", str(splash_png)] if splash_png.exists() and not debug else []),
 
         # 데이터 (런타임에 필요)
         "--add-data", f"{gen_dir};comtypes/gen",
@@ -76,9 +79,7 @@ def main() -> int:
         "--hidden-import", "fitz",
         "--hidden-import", "PIL",
 
-        # 무거운 모듈 제외 — 오프라인 LLM(Ollama)은 외부 프로그램이고
-        # easyocr+torch는 단일 EXE에 넣기엔 너무 큼 (~500MB+).
-        # 사용자가 오프라인 OCR 원하면 별도 설치 안내.
+        # 무거운/사용 안 하는 모듈 제외 (v1.0.7 — Claude API 전용)
         "--exclude-module", "easyocr",
         "--exclude-module", "torch",
         "--exclude-module", "torchvision",
@@ -88,6 +89,9 @@ def main() -> int:
         "--exclude-module", "IPython",
         "--exclude-module", "notebook",
         "--exclude-module", "jupyter",
+        # 추가: GUI 에서 안 쓰는 오프라인 추출 모듈 (코드 남아있지만 EXE 에서 제외)
+        "--exclude-module", "ocr_extract",
+        "--exclude-module", "local_extract",
 
         # Entry point
         "gui.py",

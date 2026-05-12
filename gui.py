@@ -33,17 +33,6 @@ from ai_extract import (
 from auto_fill import apply_defaults, apply_pdf, apply_taskcard
 from wxs_form import WXSForm
 
-try:
-    from local_extract import is_available as ollama_available, DEFAULT_MODEL as OLLAMA_MODEL
-except Exception:
-    ollama_available = lambda *a, **kw: False
-    OLLAMA_MODEL = "gemma3:4b"
-
-try:
-    from ocr_extract import is_available as ocr_available
-except Exception:
-    ocr_available = lambda *a, **kw: False
-
 import taskcard
 import user as user_mod
 
@@ -73,20 +62,8 @@ class App:
         ttk.Label(top, text="📄 비전자문서등록 자동입력", font=("맑은 고딕", 14, "bold")).pack(side=tk.LEFT)
         ttk.Button(top, text="⚙ 설정", width=8, command=self.open_settings).pack(side=tk.RIGHT, padx=4)
 
-        # 백엔드 선택
-        backend_row = ttk.Frame(self.root)
-        backend_row.pack(fill=tk.X, padx=10)
-        ttk.Label(backend_row, text="추출 엔진:").pack(side=tk.LEFT)
-        self.backend_var = tk.StringVar(value="auto")
-        for label, val in [
-            ("자동", "auto"),
-            ("Claude API", "claude"),
-            ("OCR+LLM (빠른 오프라인)", "ocr"),
-            ("Vision-LLM (느린 오프라인)", "vision"),
-            ("정규식만", "regex"),
-        ]:
-            ttk.Radiobutton(backend_row, text=label, variable=self.backend_var,
-                            value=val, command=self._update_api_status).pack(side=tk.LEFT, padx=4)
+        # 추출 엔진은 Claude 만 사용 (다른 옵션 제거됨 — v1.0.7)
+        self.backend_var = tk.StringVar(value="claude")
         self.api_label = ttk.Label(self.root, text="", foreground="gray", font=("맑은 고딕", 9))
         self.api_label.pack(anchor=tk.W, padx=10, pady=(2, 0))
 
@@ -152,29 +129,13 @@ class App:
 
     def _update_api_status(self):
         key = get_api_key()
-        ocr_ok = ocr_available()
-        vision_ok = ollama_available(OLLAMA_MODEL)
-        backend = self.backend_var.get()
-        # 현재 Claude 모델
         model_label = get_model_label()
-        parts = []
-        parts.append(f"☁ Claude: {'활성 ['+model_label+']' if key else '미설정'}")
-        parts.append(f"📷 OCR+LLM: {'활성' if ocr_ok else '비활성'}")
-        parts.append(f"👁 Vision: {'활성' if vision_ok else '비활성'}")
-        active = {
-            "auto":   "자동 (Claude → OCR+LLM → Vision → 정규식)",
-            "claude": "Claude API",
-            "ocr":    "OCR(EasyOCR) + 텍스트 LLM",
-            "vision": f"Vision-LLM ({OLLAMA_MODEL})",
-            "regex":  "정규식만",
-        }[backend]
-        text = "  |  ".join(parts) + f"  ▶  사용: {active}"
-        ok = (backend == "auto" and (key or ocr_ok or vision_ok)) or \
-             (backend == "claude" and key) or \
-             (backend == "ocr" and ocr_ok) or \
-             (backend == "vision" and vision_ok) or \
-             backend == "regex"
-        self.api_label.config(text=text, foreground="#0a7" if ok else "#a40")
+        if key:
+            text = f"☁ Claude API: 활성 [{model_label}]"
+            self.api_label.config(text=text, foreground="#0a7")
+        else:
+            text = "☁ Claude API: 미설정 — [⚙ 설정] 에서 API 키를 등록해주세요"
+            self.api_label.config(text=text, foreground="#a40")
 
     # ──────────────── 이벤트 ────────────────
 
@@ -488,9 +449,20 @@ class App:
         self.log_text.see(tk.END)
 
 
+def _close_splash():
+    """PyInstaller splash screen 닫기 (있을 때만)."""
+    try:
+        import pyi_splash  # type: ignore
+        pyi_splash.close()
+    except Exception:
+        pass  # 개발 환경 또는 splash 없이 빌드된 경우
+
+
 def main():
     root = TkinterDnD.Tk() if HAS_DND else tk.Tk()
     App(root)
+    # GUI 가 mainloop 진입 직전에 splash 닫음 (모든 import 끝났음을 의미)
+    _close_splash()
     root.mainloop()
 
 
