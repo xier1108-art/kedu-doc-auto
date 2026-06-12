@@ -212,8 +212,6 @@ PROMPT_TEMPLATE = """이 PDF는 한국 공공기관 접수용 문서입니다. �
   ❌ "○○구 교육청" 같이 ★존재하지 않는 기관★ (한국에는 시·도 교육청만 있음.
      "동대문구 교육청" / "강남구 교육청" 등은 없음 → OCR 환각이므로 절대 출력 금지)
   ❌ "참조:" 줄의 ○○과장/○○부장 등 — 참조이지 수신자 아님
-[요지] 본문 1~2문장(100자) 핵심. 공사명 포함 가능.
-
 ═══════ [B 유형 — 조달청 검사검수요청서] ═══════
 
 [제목] 형식: "검사검수요청서[{{계약건명}}]"
@@ -232,7 +230,6 @@ PROMPT_TEMPLATE = """이 PDF는 한국 공공기관 접수용 문서입니다. �
 [시행일자] "작성일자:" 옆 날짜 → YYYY-MM-DD
   ❌ "검사요청일자", "검수요청일자" → 아님 (정확히 작성일자)
   예: "작성일자: 2026년05월07일" → "2026-05-07"
-[요지] 빈 문자열 "" (사용자 지시).
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 출력: JSON 한 객체만 (코드블록 X, 부가 설명 X)
@@ -244,8 +241,7 @@ PROMPT_TEMPLATE = """이 PDF는 한국 공공기관 접수용 문서입니다. �
   "sender": "...",
   "receiver": "...",
   "doc_no": "...",
-  "date": "YYYY-MM-DD",
-  "summary": "..."
+  "date": "YYYY-MM-DD"
 }}
 
 표지 식별 안 되면 cover_page=0, doc_type="?" 로 두고 나머지 빈 문자열.
@@ -303,7 +299,8 @@ def extract_with_claude(pdf_path: Path, model: str | None = None) -> DocMeta | N
     prompt = PROMPT_TEMPLATE.format(filename=pdf_path.name)
     resp = client.messages.create(
         model=model,
-        max_tokens=1024,
+        # 요지 생성 제거 후 출력은 메타 JSON 만 — 512 토큰이면 충분 (비용/속도 절감)
+        max_tokens=512,
         # temperature=0 — 같은 PDF 에 매번 같은 답이 나오도록 (결정적 추출)
         temperature=0,
         messages=[{

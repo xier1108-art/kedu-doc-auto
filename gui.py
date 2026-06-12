@@ -269,7 +269,6 @@ class App:
             ("수신자 (RECEIVERNAME)",   meta.receiver),
             ("문서번호 (DOCREGNO)",     meta.doc_no),
             ("시행일자 (ENFORCEDATE)",  meta.enforce_date),
-            ("요지 (docOutline)",       meta.summary),
             ("[notes]",                 ", ".join(meta.notes)),
         ]
         for k, v in rows:
