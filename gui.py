@@ -269,7 +269,6 @@ class App:
             ("수신자 (RECEIVERNAME)",   meta.receiver),
             ("문서번호 (DOCREGNO)",     meta.doc_no),
             ("시행일자 (ENFORCEDATE)",  meta.enforce_date),
-            ("요지 (docOutline)",       meta.summary),
             ("[notes]",                 ", ".join(meta.notes)),
         ]
         for k, v in rows:
@@ -358,7 +357,7 @@ class App:
 
         # ── 모델 선택 섹션 ──
         ttk.Label(win, text="Claude 모델", font=("맑은 고딕", 11, "bold")).pack(pady=(0, 4))
-        ttk.Label(win, text="사용 가능한 모델 — 새로고침 시 본인 키로 사용 가능한 최신 목록을 가져옵니다",
+        ttk.Label(win, text="설정 창을 열 때마다 본인 키로 사용 가능한 최신 모델 목록을 자동으로 가져옵니다",
                   foreground="gray", font=("맑은 고딕", 9)).pack()
 
         # 콤보박스 + 새로고침 버튼
@@ -368,7 +367,7 @@ class App:
         # 초기 모델 목록 (캐시 또는 fallback)
         current_models = list_available_models(refresh=False)
         # tier 순서: opus → sonnet → haiku
-        tier_order = {"opus": 0, "sonnet": 1, "haiku": 2}
+        tier_order = {"fable": 0, "mythos": 0, "opus": 1, "sonnet": 2, "haiku": 3}
         current_models.sort(key=lambda m: (tier_order.get(m["tier"], 9), m["id"]))
 
         def _format(m: dict) -> str:
@@ -404,6 +403,11 @@ class App:
                 status.config(text=f"✗ 새로고침 실패: {e}", foreground="#a40")
 
         ttk.Button(combo_row, text="🔄 새로고침", command=refresh_models).pack(side=tk.LEFT, padx=6)
+
+        # 설정 창을 열 때 자동으로 최신 모델 목록 가져오기 (키가 등록돼 있을 때만).
+        # UI 를 먼저 그린 뒤 백그라운드로 호출 — 다이얼로그 뜨는 게 API 호출 때문에 지연되지 않도록.
+        if get_api_key():
+            win.after(150, refresh_models)
 
         # tier 안내
         ttk.Label(win, text="모델별 특성:", font=("맑은 고딕", 10, "bold")).pack(pady=(10, 2))

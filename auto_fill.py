@@ -151,7 +151,7 @@ def apply_pdf(f: WXSForm, meta: DocMeta) -> list[str]:
         ("DOCREGNO",         meta.doc_no,       "생산기관문서번호"),
         ("ENFORCEDATE",      meta.enforce_date, "시행일자"),
         ("RECEIVERNAME",     meta.receiver,     "수신자명"),
-        ("docOutline",       meta.summary,      "문서요지"),
+        # 문서요지(docOutline) 는 v1.0.8 에서 제거 — API 토큰 절감 + 속도 개선 (사용자 요청)
     ]
     for field_id, value, label in mapping:
         if not value:
