@@ -237,19 +237,23 @@ PROMPT_TEMPLATE = """이 PDF는 한국 공공기관 접수용 문서입니다. �
   예: "작성일자: 2026년05월07일" → "2026-05-07"
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-출력: JSON 한 객체만 (코드블록 X, 부가 설명 X)
+🎯 출력 방법
 
-{{
-  "cover_page": 1,    // 표지가 몇 페이지인지 (1 또는 2). 없으면 0
-  "doc_type": "A" 또는 "B",   // A: 공문, B: 검사검수요청서
-  "title": "...",
-  "sender": "...",
-  "receiver": "...",
-  "doc_no": "...",
-  "date": "YYYY-MM-DD"
-}}
+반드시 record_document_metadata 도구를 호출해서 결과를 기록하라.
+설명·분석 과정을 따로 쓰지 말고 곧바로 도구를 호출한다.
+해당 항목을 못 찾으면 그 값은 빈 문자열 "" 로 둔다.
 
-표지 식별 안 되면 cover_page=0, doc_type="?" 로 두고 나머지 빈 문자열.
+값 예시 (A 유형):
+  cover_page="1", doc_type="A",
+  title="설계도서 검토서(건축3차) 보고",
+  sender="㈜대성씨엠건축사사무소",
+  receiver="서울특별시서부교육지원청",
+  doc_no="대성(갈현초)제2026-84호",
+  date="2026-04-28"
+
+⚠ 첨부 자료가 여러 장 붙어 있어도 ★표지(맨 앞 공문)★ 기준으로 판단한다.
+   뒤쪽에 검사검수요청서가 별첨돼 있어도 표지가 일반 공문이면 doc_type="A".
+
 참고용 파일명: {filename}
 """
 
@@ -257,6 +261,92 @@ PROMPT_TEMPLATE = """이 PDF는 한국 공공기관 접수용 문서입니다. �
 # Claude API PDF 입력 제한
 CLAUDE_MAX_PAGES = 5      # 어차피 표지는 1~2페이지이므로 5장이면 충분
 CLAUDE_MAX_BYTES = 30 * 1024 * 1024  # 30MB
+
+# `temperature` 를 거부하는 모델 id 캐시 (프로세스 내에서만 유지).
+# 최신 모델은 temperature 가 deprecated 되어 400 을 반환하므로,
+# 한 번 걸린 모델은 다음부터 아예 파라미터를 빼고 호출한다.
+_NO_TEMPERATURE_MODELS: set[str] = set()
+
+
+# 추출 결과를 받아내기 위한 도구 스키마.
+# tool_choice 로 이 도구를 강제하면 모델이 반드시 이 형태로 값을 채워 보내므로
+# "JSON 앞에 산문을 쓰다가 잘리는" 문제가 원천적으로 사라진다.
+EXTRACT_TOOL: dict = {
+    "name": "record_document_metadata",
+    "description": "PDF 에서 읽어낸 한국 공문서 메타데이터를 기록한다.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "cover_page": {
+                "type": "string",
+                "description": "공문 표지가 몇 번째 페이지인지 ('1' 또는 '2'). 못 찾으면 '0'",
+            },
+            "doc_type": {
+                "type": "string",
+                "description": "'A'=일반 공문, 'B'=조달청 검사검수요청서. 판별 불가면 '?'",
+            },
+            "title": {
+                "type": "string",
+                "description": "제목. A유형은 '제목:' 줄, B유형은 '검사검수요청서[계약건명]' 형식",
+            },
+            "sender": {
+                "type": "string",
+                "description": "발신 기관/회사명. 주소·사람 이름·공사명은 제외",
+            },
+            "receiver": {
+                "type": "string",
+                "description": "수신 기관명. 직위(장/교육장) 제거",
+            },
+            "doc_no": {
+                "type": "string",
+                "description": "문서번호. A유형은 '시행' 줄 번호, B유형은 검사검수요청번호",
+            },
+            "date": {
+                "type": "string",
+                "description": "시행일자 YYYY-MM-DD 형식",
+            },
+        },
+        "required": [
+            "cover_page", "doc_type", "title",
+            "sender", "receiver", "doc_no", "date",
+        ],
+    },
+}
+
+
+def _parse_json_object(text: str) -> dict:
+    """응답 문자열에서 첫 번째 완결된 JSON 객체를 파싱.
+
+    문자열 리터럴 안의 중괄호/이스케이프까지 고려해 괄호 균형을 맞춰 자른다.
+    (greedy 정규식은 뒤에 설명 문장이 붙으면 실패하므로 직접 스캔)
+    """
+    start = text.find("{")
+    if start == -1:
+        raise ValueError(f"Claude 응답에서 JSON을 찾을 수 없음:\n{text[:500]}")
+
+    depth = 0
+    in_str = False
+    escaped = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_str:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return json.loads(text[start:i + 1])
+
+    raise ValueError(f"Claude 응답의 JSON 이 닫히지 않았습니다:\n{text[:500]}")
 
 
 def _truncate_pdf_if_needed(pdf_path: Path, max_pages: int = CLAUDE_MAX_PAGES,
@@ -302,13 +392,11 @@ def extract_with_claude(pdf_path: Path, model: str | None = None) -> DocMeta | N
     pdf_bytes = _truncate_pdf_if_needed(pdf_path)
     pdf_b64 = base64.standard_b64encode(pdf_bytes).decode("utf-8")
     prompt = PROMPT_TEMPLATE.format(filename=pdf_path.name)
-    resp = client.messages.create(
-        model=model,
-        # 요지 생성 제거 후 출력은 메타 JSON 만 — 512 토큰이면 충분 (비용/속도 절감)
-        max_tokens=512,
-        # temperature=0 — 같은 PDF 에 매번 같은 답이 나오도록 (결정적 추출)
-        temperature=0,
-        messages=[{
+    kwargs = {
+        "model": model,
+        # 도구 호출로 결과를 받지만, 모델이 앞서 생각을 쓸 수 있으므로 여유 있게.
+        "max_tokens": 2048,
+        "messages": [{
             "role": "user",
             "content": [
                 {
@@ -322,22 +410,58 @@ def extract_with_claude(pdf_path: Path, model: str | None = None) -> DocMeta | N
                 {"type": "text", "text": prompt},
             ],
         }],
-    )
+        # ★ 도구 호출 강제 (structured output).
+        #   자유 텍스트로 받으면 최신 모델이 JSON 앞에 분석 산문을 길게 쓰다가
+        #   max_tokens 에서 잘려 JSON 을 못 내놓는 사고가 남. 도구를 강제하면
+        #   스키마에 맞는 값이 그대로 오므로 파싱 실패 자체가 사라진다.
+        "tools": [EXTRACT_TOOL],
+        "tool_choice": {"type": "tool", "name": EXTRACT_TOOL["name"]},
+    }
 
-    text = resp.content[0].text.strip()
-    # 코드블록이나 부가 텍스트가 섞여도 처음 발견되는 JSON 객체 추출
-    m = re.search(r"\{[\s\S]*\}", text)
-    if not m:
-        raise ValueError(f"Claude 응답에서 JSON을 찾을 수 없음:\n{text}")
-    data = json.loads(m.group())
+    # temperature 는 일부 최신 모델(Sonnet 5 등)에서 deprecated → 400 에러.
+    # 지원하는 모델에서는 결정적 추출을 위해 0 을 쓰고, 거부하면 빼고 재시도.
+    resp = None
+    if model not in _NO_TEMPERATURE_MODELS:
+        try:
+            resp = client.messages.create(temperature=0, **kwargs)
+        except Exception as e:
+            if "temperature" in str(e).lower():
+                _NO_TEMPERATURE_MODELS.add(model)  # 다음부터는 바로 생략
+            else:
+                raise
+    if resp is None:
+        resp = client.messages.create(**kwargs)
+
+    # 도구 호출 결과(dict) 를 그대로 사용 — JSON 파싱 불필요.
+    data = None
+    for block in resp.content:
+        if getattr(block, "type", None) == "tool_use":
+            data = block.input
+            break
+
+    if data is None:
+        # 도구를 안 쓴 경우(이론상 없음) 텍스트에서 JSON 추출 시도
+        text = "".join(
+            b.text for b in resp.content if getattr(b, "type", None) == "text"
+        )
+        if getattr(resp, "stop_reason", None) == "max_tokens":
+            raise ValueError(
+                f"Claude 응답이 max_tokens 에서 잘렸습니다 (model={model}).\n{text[:400]}"
+            )
+        data = _parse_json_object(text)
+
+    def _s(key: str) -> str:
+        """None/숫자 등이 와도 안전하게 문자열로."""
+        v = data.get(key)
+        return str(v).strip() if v is not None else ""
 
     return DocMeta(
-        title=data.get("title", "").strip(),
-        sender=data.get("sender", "").strip(),
-        receiver=data.get("receiver", "").strip(),
-        doc_no=data.get("doc_no", "").strip(),
-        enforce_date=data.get("date", "").strip(),
-        summary=data.get("summary", "").strip(),
+        title=_s("title"),
+        sender=_s("sender"),
+        receiver=_s("receiver"),
+        doc_no=_s("doc_no"),
+        enforce_date=_s("date"),
+        summary=_s("summary"),
         source_file=str(pdf_path),
         notes=[f"Claude API ({model})"],
     )
