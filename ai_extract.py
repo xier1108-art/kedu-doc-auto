@@ -262,10 +262,60 @@ PROMPT_TEMPLATE = """이 PDF는 한국 공공기관 접수용 문서입니다. �
 CLAUDE_MAX_PAGES = 5      # 어차피 표지는 1~2페이지이므로 5장이면 충분
 CLAUDE_MAX_BYTES = 30 * 1024 * 1024  # 30MB
 
-# `temperature` 를 거부하는 모델 id 캐시 (프로세스 내에서만 유지).
-# 최신 모델은 temperature 가 deprecated 되어 400 을 반환하므로,
-# 한 번 걸린 모델은 다음부터 아예 파라미터를 빼고 호출한다.
+# ── 모델별 API 파라미터 호환성 캐시 (프로세스 내에서만 유지) ──
+# Anthropic 은 모델 세대가 바뀌면 일부 파라미터를 제거한다.
+#   예) Sonnet 5   : `temperature` deprecated        → 400
+#       Sonnet 5.5 : `tool_choice` 강제(type=tool) 미지원 → 400
+# 매번 새 모델이 나올 때마다 앱이 깨지지 않도록, 400 을 만나면 해당 옵션을
+# 빼고 자동 재시도하고 그 사실을 아래 집합에 기억해 둔다.
 _NO_TEMPERATURE_MODELS: set[str] = set()
+_NO_FORCED_TOOL_MODELS: set[str] = set()
+
+
+def _create_with_compat(client, model: str, content: list):
+    """모델별 파라미터 지원 차이를 흡수하며 messages.create 를 호출.
+
+    지원되지 않는 옵션이 있으면 400 메시지를 보고 그 옵션만 빼서 재시도한다.
+    (빠지는 순서: tool_choice 강제 → temperature)
+    400 은 토큰 과금 전에 즉시 떨어지므로 재시도 비용은 사실상 없다.
+    """
+    last_err: Exception | None = None
+
+    for _ in range(4):  # 조정 가능한 옵션 수 + 여유
+        kwargs: dict = {
+            "model": model,
+            # 도구 결과로 받지만 모델이 앞서 생각을 쓸 수 있으므로 여유 있게.
+            "max_tokens": 2048,
+            "messages": [{"role": "user", "content": content}],
+            "tools": [EXTRACT_TOOL],
+        }
+        # ★ 도구 호출 강제 (structured output).
+        #   자유 텍스트로 받으면 모델이 JSON 앞에 분석 산문을 길게 쓰다가
+        #   max_tokens 에서 잘려 JSON 을 못 내놓는 사고가 남.
+        #   강제를 지원하지 않는 모델은 "auto" 로 두되, 프롬프트에서 도구 호출을
+        #   지시하므로 대개 그대로 호출해 준다 (안 되면 텍스트 JSON 파싱으로 fallback).
+        if model not in _NO_FORCED_TOOL_MODELS:
+            kwargs["tool_choice"] = {"type": "tool", "name": EXTRACT_TOOL["name"]}
+        # temperature=0 — 같은 PDF 에 매번 같은 답이 나오도록 (결정적 추출)
+        if model not in _NO_TEMPERATURE_MODELS:
+            kwargs["temperature"] = 0
+
+        try:
+            return client.messages.create(**kwargs)
+        except Exception as e:
+            msg = str(e).lower()
+            last_err = e
+            if "tool_choice" in msg and model not in _NO_FORCED_TOOL_MODELS:
+                _NO_FORCED_TOOL_MODELS.add(model)
+                continue
+            if "temperature" in msg and model not in _NO_TEMPERATURE_MODELS:
+                _NO_TEMPERATURE_MODELS.add(model)
+                continue
+            raise
+
+    raise RuntimeError(
+        f"모델 {model} 에 맞는 호출 옵션을 찾지 못했습니다. 마지막 오류: {last_err}"
+    )
 
 
 # 추출 결과를 받아내기 위한 도구 스키마.
@@ -392,45 +442,19 @@ def extract_with_claude(pdf_path: Path, model: str | None = None) -> DocMeta | N
     pdf_bytes = _truncate_pdf_if_needed(pdf_path)
     pdf_b64 = base64.standard_b64encode(pdf_bytes).decode("utf-8")
     prompt = PROMPT_TEMPLATE.format(filename=pdf_path.name)
-    kwargs = {
-        "model": model,
-        # 도구 호출로 결과를 받지만, 모델이 앞서 생각을 쓸 수 있으므로 여유 있게.
-        "max_tokens": 2048,
-        "messages": [{
-            "role": "user",
-            "content": [
-                {
-                    "type": "document",
-                    "source": {
-                        "type": "base64",
-                        "media_type": "application/pdf",
-                        "data": pdf_b64,
-                    },
-                },
-                {"type": "text", "text": prompt},
-            ],
-        }],
-        # ★ 도구 호출 강제 (structured output).
-        #   자유 텍스트로 받으면 최신 모델이 JSON 앞에 분석 산문을 길게 쓰다가
-        #   max_tokens 에서 잘려 JSON 을 못 내놓는 사고가 남. 도구를 강제하면
-        #   스키마에 맞는 값이 그대로 오므로 파싱 실패 자체가 사라진다.
-        "tools": [EXTRACT_TOOL],
-        "tool_choice": {"type": "tool", "name": EXTRACT_TOOL["name"]},
-    }
+    content = [
+        {
+            "type": "document",
+            "source": {
+                "type": "base64",
+                "media_type": "application/pdf",
+                "data": pdf_b64,
+            },
+        },
+        {"type": "text", "text": prompt},
+    ]
 
-    # temperature 는 일부 최신 모델(Sonnet 5 등)에서 deprecated → 400 에러.
-    # 지원하는 모델에서는 결정적 추출을 위해 0 을 쓰고, 거부하면 빼고 재시도.
-    resp = None
-    if model not in _NO_TEMPERATURE_MODELS:
-        try:
-            resp = client.messages.create(temperature=0, **kwargs)
-        except Exception as e:
-            if "temperature" in str(e).lower():
-                _NO_TEMPERATURE_MODELS.add(model)  # 다음부터는 바로 생략
-            else:
-                raise
-    if resp is None:
-        resp = client.messages.create(**kwargs)
+    resp = _create_with_compat(client, model, content)
 
     # 도구 호출 결과(dict) 를 그대로 사용 — JSON 파싱 불필요.
     data = None
