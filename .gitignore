@@ -15,6 +15,7 @@ _*.json
 dist/
 build/
 *.zip
+*.spec
 
 # 받는 사람마다 다른 — 절대 공유 금지
 # (각 PC 의 %USERPROFILE% 에 저장되니 프로젝트 폴더엔 안 들어옴)
