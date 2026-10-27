@@ -37,6 +37,8 @@ class DocMeta:
     summary: str = ""         # 문서요지 → docOutline
     source_file: str = ""     # 원본 PDF 경로
     notes: list[str] = field(default_factory=list)
+    engine: str = ""          # 추출 방식 표시 (예: "Claude Sonnet 5.5", "파일명/본문 규칙")
+    warning: str = ""         # Claude 를 쓰려다 실패했을 때 그 이유 (GUI 경고용)
 
     def __str__(self) -> str:
         lines = ["DocMeta {"]

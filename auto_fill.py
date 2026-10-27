@@ -32,8 +32,6 @@ import user as user_mod
 # ─────────────────────────────────────────────
 # 사용자 기본값 (요청에 따라 항상 적용)
 # ─────────────────────────────────────────────
-USER_NAME = "김상현"
-
 DEFAULTS = {
     # 대국민공개여부 = 비공개
     "radio_PUBLICATION":   "PUBLICATION2",
@@ -45,9 +43,8 @@ DEFAULTS = {
     "radio_SECURITY":      "SECURITY0",
     # 등록구분 = 접수
     "radio_R_SENDRECEIVE": "SENDRECEIVE2",
-    # 접수자 / 업무담당자
-    "DRAFTERNAME":         USER_NAME,
-    "LASTSIGNERNAME":      USER_NAME,
+    # 접수자 / 업무담당자는 사람마다 다르므로 여기 두지 않는다 —
+    # GUI 의 [👤 사용자 저장] 으로 캡처한 값(~/.kedu_user.json)만 사용.
 }
 
 TASK_CARD_HINT = "[교육시설공사집행관리] 교육시설공사집행관리"
@@ -101,14 +98,10 @@ def apply_defaults(f: WXSForm) -> list[str]:
         except Exception as e:
             log.append(f"✗ 사용자 정보 적용: {e}")
     else:
-        # fallback: 이름만 표시 (검증은 통과 못함)
-        try:
-            f.set_value("DRAFTERNAME", DEFAULTS["DRAFTERNAME"])
-            f.set_value("LASTSIGNERNAME", DEFAULTS["LASTSIGNERNAME"])
-            log.append(f"⚠ 사용자 이름만 입력 (저장된 ID 없음 → '부서 불일치' 오류 발생 가능)")
-            log.append("   → GUI 의 [👤 사용자 저장] 으로 실제 ID 1회 캡처 필요")
-        except Exception as e:
-            log.append(f"✗ 사용자 이름 입력: {e}")
+        # 예전엔 특정인 이름을 글자로만 넣었는데, ID/부서가 비어 저장 시 '부서 불일치'
+        # 오류가 나고 다른 사람이 쓰면 남의 이름이 들어갔다 → 손대지 않고 안내만 한다.
+        log.append("⚠ 접수자/업무담당자: 저장된 사용자 없음 — 폼에서 🔍 로 직접 선택하세요")
+        log.append("   → 한 번 선택한 뒤 GUI 의 [👤 사용자 저장] 을 누르면 다음부터 자동")
 
     return log
 

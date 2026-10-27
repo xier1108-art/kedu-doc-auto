@@ -11,7 +11,7 @@ API 키 설정 (택1)
 2) 설정파일: %USERPROFILE%/.kedu_anthropic_key 에 키 한 줄
 3) gui.py 의 [⚙ 설정] 버튼
 
-비용: PDF 1건당 약 0.5~2원 (Haiku 4.5, 1~3페이지 기준)
+비용: PDF 1건당 약 25원 (기본 Sonnet 5.5, 실측 입력 약 9,500토큰. Haiku 5.5 는 2원 안팎)
 """
 from __future__ import annotations
 
@@ -30,33 +30,58 @@ MODELS_CACHE_PATH = Path.home() / ".kedu_anthropic_models.json"  # 동적 fetch 
 # Fallback 모델 목록 (API 호출 실패 시 사용)
 # Anthropic 이 출시한 주요 모델들 — 실제 사용 가능 여부는 API 가 결정
 _FALLBACK_MODELS: list[dict] = [
-    {"id": "claude-opus-4-7",                "name": "Claude Opus 4.7",    "tier": "opus"},
-    {"id": "claude-sonnet-4-6",              "name": "Claude Sonnet 4.6",  "tier": "sonnet"},
-    {"id": "claude-opus-4-6",                "name": "Claude Opus 4.6",    "tier": "opus"},
-    {"id": "claude-opus-4-5-20251101",       "name": "Claude Opus 4.5",    "tier": "opus"},
-    {"id": "claude-haiku-4-5-20251001",      "name": "Claude Haiku 4.5",   "tier": "haiku"},
-    {"id": "claude-sonnet-4-5-20250929",     "name": "Claude Sonnet 4.5",  "tier": "sonnet"},
+    {"id": "claude-opus-5-5",   "name": "Claude Opus 5.5",   "tier": "opus"},
+    {"id": "claude-sonnet-5-5", "name": "Claude Sonnet 5.5", "tier": "sonnet"},
+    {"id": "claude-haiku-5-5",  "name": "Claude Haiku 5.5",  "tier": "haiku"},
 ]
 
 # 기본값 — 첫 사용 시. 정확도 / 비용 균형
-DEFAULT_MODEL = "claude-sonnet-4-5-20250929"
+DEFAULT_MODEL = "claude-sonnet-5-5"
+
+# 예전 버전이 기본값으로 저장해 두던 모델 — 지금은 구형이라 기본값으로 올려준다.
+# (사용자가 일부러 고른 다른 모델은 건드리지 않음)
+_LEGACY_DEFAULTS = {"claude-sonnet-4-5-20250929"}
 
 
 def _tier_of(model_id: str) -> str:
-    """모델 id 에서 tier 추론 (opus/sonnet/haiku)."""
+    """모델 id 에서 tier 추론 (opus/sonnet/haiku/fable)."""
     mid = model_id.lower()
-    for t in ("opus", "sonnet", "haiku"):
+    for t in ("fable", "mythos", "opus", "sonnet", "haiku"):
         if t in mid:
-            return t
+            return "fable" if t == "mythos" else t
     return "?"
 
 
 # 모델 tier 별 안내 (사용자에게 비용 감각)
 TIER_HINT: dict[str, str] = {
-    "opus":   "최고 정확도 / 비싼 (~50원/PDF 추정)",
-    "sonnet": "균형 (정확 + 합리적 비용, ~10원/PDF)",
-    "haiku":  "저렴 / 빠른 (~1원/PDF, 디지털 PDF 적합)",
+    "fable":  "최상위 / 매우 비쌈 (~130원/PDF) — 이 용도엔 과함",
+    "opus":   "최고 정확도 / 비쌈 (~50원/PDF)",
+    "sonnet": "균형 — 추천 (~25원/PDF)",
+    "haiku":  "저렴 / 빠름 (~2원/PDF, 디지털 PDF 적합)",
 }
+
+
+def _model_version(model_id: str) -> tuple[int, int]:
+    """'claude-sonnet-5-5' → (5, 5), 'claude-opus-4-5-20251101' → (4, 5). 모르면 (0, 0)."""
+    m = re.match(r"claude-[a-z]+-(\d+)(?:-(\d{1,2}))?(?:-|$)", model_id.lower())
+    if not m:
+        return (0, 0)
+    return (int(m.group(1)), int(m.group(2) or 0))
+
+
+def _supports_effort(model_id: str) -> bool:
+    """output_config.effort 를 받는 모델인지 (Sonnet 4.5 / Haiku 4.5 이하는 400 오류)."""
+    major, minor = _model_version(model_id)
+    tier = _tier_of(model_id)
+    if major >= 5:
+        return True
+    if major == 4:
+        return (tier == "opus" and minor >= 5) or (tier == "sonnet" and minor >= 6)
+    return False
+
+
+# 서버측 refusal fallback("default") 을 받는 모델 (Claude API 기준)
+_FALLBACK_CAPABLE = {"claude-sonnet-5-5", "claude-opus-5-5", "claude-opus-5", "claude-fable-5-1"}
 
 
 def list_available_models(refresh: bool = False) -> list[dict]:
@@ -101,19 +126,23 @@ def get_model() -> str:
     """저장된 모델 id (없으면 DEFAULT)."""
     if MODEL_PATH.exists():
         v = MODEL_PATH.read_text(encoding="utf-8").strip()
-        if v:
+        if v and v not in _LEGACY_DEFAULTS:
             return v
     return DEFAULT_MODEL
 
 
-def get_model_label() -> str:
-    """현재 선택된 모델의 사람 친화 표시명 (예: 'Sonnet 4.5')."""
-    mid = get_model()
-    for m in list_available_models():
+def model_label(mid: str) -> str:
+    """모델 id 의 사람 친화 표시명 (예: 'Sonnet 5.5')."""
+    for m in list_available_models() + _FALLBACK_MODELS:
         if m["id"] == mid:
-            # 'Claude Sonnet 4.5' → 'Sonnet 4.5'
+            # 'Claude Sonnet 5.5' → 'Sonnet 5.5'
             return m["name"].replace("Claude ", "")
     return mid
+
+
+def get_model_label() -> str:
+    """현재 선택된 모델의 사람 친화 표시명."""
+    return model_label(get_model())
 
 
 def save_model_id(model_id: str) -> None:
@@ -279,6 +308,27 @@ def _truncate_pdf_if_needed(pdf_path: Path, max_pages: int = CLAUDE_MAX_PAGES,
         return truncated
 
 
+def _friendly_error(exc: Exception, model: str) -> str:
+    """API 예외를 사용자가 바로 조치할 수 있는 한국어 문장으로."""
+    import anthropic
+    if isinstance(exc, anthropic.AuthenticationError):
+        return "API 키가 올바르지 않습니다 — [⚙ 설정] 에서 키를 다시 확인하세요"
+    if isinstance(exc, anthropic.PermissionDeniedError):
+        return f"이 API 키로는 모델 '{model}' 을(를) 쓸 수 없습니다 — [⚙ 설정] 에서 다른 모델을 고르세요"
+    if isinstance(exc, anthropic.NotFoundError):
+        return f"모델 '{model}' 을(를) 찾을 수 없습니다 — [⚙ 설정] → 🔄 새로고침 후 다시 고르세요"
+    if isinstance(exc, anthropic.RateLimitError):
+        return "요청이 너무 많습니다 (사용량 한도) — 잠시 후 다시 시도하세요"
+    if isinstance(exc, anthropic.APIConnectionError):
+        return "Claude 서버에 연결하지 못했습니다 — 인터넷 연결을 확인하세요"
+    if isinstance(exc, anthropic.APIStatusError):
+        msg = getattr(exc, "message", "") or str(exc)
+        if "credit balance" in msg.lower():
+            return "API 크레딧 잔액이 부족합니다 — console.anthropic.com 에서 충전하세요"
+        return f"Claude API 오류 ({exc.status_code}): {msg}"
+    return str(exc)
+
+
 def extract_with_claude(pdf_path: Path, model: str | None = None) -> DocMeta | None:
     """Claude API로 PDF 메타데이터 추출. 키가 없으면 None 반환.
 
@@ -297,12 +347,13 @@ def extract_with_claude(pdf_path: Path, model: str | None = None) -> DocMeta | N
     pdf_bytes = _truncate_pdf_if_needed(pdf_path)
     pdf_b64 = base64.standard_b64encode(pdf_bytes).decode("utf-8")
     prompt = PROMPT_TEMPLATE.format(filename=pdf_path.name)
-    resp = client.messages.create(
+    params: dict = dict(
         model=model,
-        # 요지 생성 제거 후 출력은 메타 JSON 만 — 512 토큰이면 충분 (비용/속도 절감)
-        max_tokens=512,
-        # temperature=0 — 같은 PDF 에 매번 같은 답이 나오도록 (결정적 추출)
-        temperature=0,
+        # 출력은 메타 JSON 뿐이지만 최신 모델은 답하기 전에 생각(thinking)도 하므로 여유를 둔다.
+        # (512 로 두면 생각하다 잘려서 JSON 이 안 나올 수 있음)
+        max_tokens=4096,
+        # ※ temperature 는 보내지 않는다 — 최신 모델(Sonnet 5.5 등)은 기본값 외 temperature 를
+        #   400 오류로 거부한다. (예전 temperature=0 때문에 매번 실패 → 정규식으로 조용히 대체됐음)
         messages=[{
             "role": "user",
             "content": [
@@ -318,8 +369,32 @@ def extract_with_claude(pdf_path: Path, model: str | None = None) -> DocMeta | N
             ],
         }],
     )
+    if _supports_effort(model):
+        # 표지에서 몇 개 값만 읽는 단순 작업 — 깊게 생각할 필요 없음 (빠르고 저렴)
+        params["output_config"] = {"effort": "low"}
+    fallback_kw: dict = {}
+    if model in _FALLBACK_CAPABLE:
+        # 안전 분류기가 드물게 요청을 거절하면 서버가 다른 모델로 대신 처리 (refusal fallback)
+        fallback_kw = dict(extra_headers={"anthropic-beta": "server-side-fallback-2026-07-01"},
+                           extra_body={"fallbacks": "default"})
 
-    text = resp.content[0].text.strip()
+    try:
+        try:
+            resp = client.messages.create(**params, **fallback_kw)
+        except anthropic.BadRequestError:
+            if not fallback_kw:
+                raise
+            # 계정/플랫폼이 fallback 베타를 지원하지 않는 경우 — 없이 한 번 더
+            resp = client.messages.create(**params)
+    except anthropic.APIError as e:
+        raise RuntimeError(_friendly_error(e, model)) from e
+
+    if resp.stop_reason == "refusal":
+        raise RuntimeError("Claude 가 이 문서 처리를 거절했습니다 — 값을 직접 확인/입력하세요")
+    # 응답 앞부분에 thinking 블록이 올 수 있으므로 text 블록만 모은다
+    text = "".join(b.text for b in resp.content if b.type == "text").strip()
+    if resp.stop_reason == "max_tokens" and "}" not in text:
+        raise RuntimeError("Claude 응답이 중간에 잘렸습니다 — 다시 시도하세요")
     # 코드블록이나 부가 텍스트가 섞여도 처음 발견되는 JSON 객체 추출
     m = re.search(r"\{[\s\S]*\}", text)
     if not m:
@@ -332,9 +407,9 @@ def extract_with_claude(pdf_path: Path, model: str | None = None) -> DocMeta | N
         receiver=data.get("receiver", "").strip(),
         doc_no=data.get("doc_no", "").strip(),
         enforce_date=data.get("date", "").strip(),
-        summary=data.get("summary", "").strip(),
         source_file=str(pdf_path),
         notes=[f"Claude API ({model})"],
+        engine=f"Claude {model_label(model)}",
     )
 
 
@@ -375,7 +450,7 @@ def extract_smart(pdf_path: str | Path, prefer: str = "claude") -> DocMeta:
             meta = extract_with_claude(p)
             if meta:
                 return _merge_with_filename(meta, p)
-            claude_err = "API 키 미설정"
+            claude_err = "API 키 미설정 — [⚙ 설정] 에서 키를 등록하면 Claude 로 정확하게 추출합니다"
         except Exception as e:
             claude_err = str(e)
     else:
@@ -384,6 +459,10 @@ def extract_smart(pdf_path: str | Path, prefer: str = "claude") -> DocMeta:
     # ── Tier 2: 정규식 fallback ──
     meta = regex_extract(p)
     meta.notes.append(f"Claude 미사용 ({claude_err}) — 정규식 fallback")
+    meta.engine = "파일명/본문 규칙"
+    if prefer == "claude":
+        # GUI 가 눈에 띄게 경고하도록 — 조용히 정확도가 떨어진 결과를 쓰지 않게
+        meta.warning = claude_err
     return meta
 
 
