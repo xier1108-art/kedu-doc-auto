@@ -476,14 +476,14 @@ class App:
 
         # ── 모델 선택 섹션 ──
         ttk.Label(win, text="Claude 모델", font=("맑은 고딕", 11, "bold")).pack(pady=(0, 4))
-        ttk.Label(win, text="새로고침하면 이 키로 쓸 수 있는 최신 목록을 가져옵니다 (기본·추천: Sonnet 5.5)",
+        ttk.Label(win, text="설정 창을 열 때마다 이 키로 쓸 수 있는 최신 목록을 자동으로 가져옵니다 (기본·추천: Sonnet 5.5)",
                   foreground="gray", font=("맑은 고딕", 9)).pack()
 
         # 콤보박스 + 새로고침 버튼
         combo_row = ttk.Frame(win)
         combo_row.pack(fill=tk.X, padx=20, pady=8)
 
-        tier_order = {"fable": 0, "opus": 1, "sonnet": 2, "haiku": 3}
+        tier_order = {"fable": 0, "mythos": 0, "opus": 1, "sonnet": 2, "haiku": 3}
         cur_id = get_model()
 
         def _prepare(models: list[dict]) -> list[dict]:
@@ -525,6 +525,11 @@ class App:
                 status.config(text=f"✗ 새로고침 실패: {e}", foreground="#a40")
 
         ttk.Button(combo_row, text="🔄 새로고침", command=refresh_models).pack(side=tk.LEFT, padx=6)
+
+        # 설정 창을 열 때 자동으로 최신 모델 목록 가져오기 (키가 등록돼 있을 때만).
+        # UI 를 먼저 그린 뒤 호출 — 다이얼로그 뜨는 게 API 호출 때문에 지연되지 않도록.
+        if get_api_key():
+            win.after(150, refresh_models)
 
         # tier 안내
         ttk.Label(win, text="모델별 특성:", font=("맑은 고딕", 10, "bold")).pack(pady=(10, 2))

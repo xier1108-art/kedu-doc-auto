@@ -2,7 +2,7 @@
 
 PDF 한 개를 드래그하면 Claude Vision AI 가 문서 내용을 분석해서 K-에듀파인 비전자문서등록 폼을 자동으로 채워주는 도구.
 
-> **현재 버전**: v1.1.0 (2026.10 기준) — 최신 Claude 모델 대응, 추출값 직접 수정, Claude 실패 경고
+> **현재 버전**: v1.2.0 (2026.11 기준) — 최신 Claude 모델 대응, 추출값 직접 수정, Claude 실패 경고
 
 ---
 
@@ -220,7 +220,7 @@ gh release create vX.Y.Z dist\kedu-doc-auto-vX.Y.Z.exe dist\kedu-doc-auto-vX.Y.Z
 
 | 버전 | 주요 변경 |
 |---|---|
-| **v1.1.0** | 최신 모델(Sonnet 5.5 기본) 대응 — temperature 제거로 Claude 호출이 다시 동작, 추출값 직접 수정 후 입력, Claude 실패 시 빨간 경고+이유, 저장된 사용자가 없을 때 특정인 이름을 넣던 동작 제거, 로그 접기 |
+| **v1.2.0** | Sonnet 5.5 기본, temperature 제거, 추출값 직접 수정 후 입력, Claude 실패 시 빨간 경고+이유, 저장된 사용자가 없을 때 특정인 이름을 넣던 동작 제거, 로그 접기 |
 | v1.0.7 | 시작 시간 30~40배 단축 (~2초), GUI 단순화 (Claude 전용), Splash, 가이드 docx 추가 |
 | v1.0.6 | onedir 빌드 모드 추가 (시작 시간 6~8배 개선) |
 | v1.0.5 | 모든 Claude 모델 동적 fetch (Opus/Sonnet/Haiku 자유 선택) |

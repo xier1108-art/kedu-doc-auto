@@ -44,20 +44,24 @@ _LEGACY_DEFAULTS = {"claude-sonnet-4-5-20250929"}
 
 
 def _tier_of(model_id: str) -> str:
-    """모델 id 에서 tier 추론 (opus/sonnet/haiku/fable)."""
+    """모델 id 에서 tier 추론. Anthropic 이 신규 tier 이름을 출시해도
+    (예: fable, mythos) 최소한 '?' 로 안전하게 떨어짐 — 새로 발견되면
+    TIER_HINT 에 한 줄만 추가하면 됨."""
     mid = model_id.lower()
-    for t in ("fable", "mythos", "opus", "sonnet", "haiku"):
+    for t in ("opus", "sonnet", "haiku", "fable", "mythos"):
         if t in mid:
-            return "fable" if t == "mythos" else t
+            return t
     return "?"
 
 
 # 모델 tier 별 안내 (사용자에게 비용 감각)
 TIER_HINT: dict[str, str] = {
     "fable":  "최상위 / 매우 비쌈 (~130원/PDF) — 이 용도엔 과함",
+    "mythos": "최상위 / 매우 비쌈 (~130원/PDF) — 이 용도엔 과함",
     "opus":   "최고 정확도 / 비쌈 (~50원/PDF)",
     "sonnet": "균형 — 추천 (~25원/PDF)",
     "haiku":  "저렴 / 빠름 (~2원/PDF, 디지털 PDF 적합)",
+    "?":      "신규/미분류 모델 — 사용 전 콘솔에서 요금 확인 권장",
 }
 
 
@@ -261,19 +265,23 @@ PROMPT_TEMPLATE = """이 PDF는 한국 공공기관 접수용 문서입니다. �
   예: "작성일자: 2026년05월07일" → "2026-05-07"
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-출력: JSON 한 객체만 (코드블록 X, 부가 설명 X)
+🎯 출력 방법
 
-{{
-  "cover_page": 1,    // 표지가 몇 페이지인지 (1 또는 2). 없으면 0
-  "doc_type": "A" 또는 "B",   // A: 공문, B: 검사검수요청서
-  "title": "...",
-  "sender": "...",
-  "receiver": "...",
-  "doc_no": "...",
-  "date": "YYYY-MM-DD"
-}}
+반드시 record_document_metadata 도구를 호출해서 결과를 기록하라.
+설명·분석 과정을 따로 쓰지 말고 곧바로 도구를 호출한다.
+해당 항목을 못 찾으면 그 값은 빈 문자열 "" 로 둔다.
 
-표지 식별 안 되면 cover_page=0, doc_type="?" 로 두고 나머지 빈 문자열.
+값 예시 (A 유형):
+  cover_page="1", doc_type="A",
+  title="설계도서 검토서(건축3차) 보고",
+  sender="㈜대성씨엠건축사사무소",
+  receiver="서울특별시서부교육지원청",
+  doc_no="대성(갈현초)제2026-84호",
+  date="2026-04-28"
+
+⚠ 첨부 자료가 여러 장 붙어 있어도 ★표지(맨 앞 공문)★ 기준으로 판단한다.
+   뒤쪽에 검사검수요청서가 별첨돼 있어도 표지가 일반 공문이면 doc_type="A".
+
 참고용 파일명: {filename}
 """
 
@@ -281,6 +289,137 @@ PROMPT_TEMPLATE = """이 PDF는 한국 공공기관 접수용 문서입니다. �
 # Claude API PDF 입력 제한
 CLAUDE_MAX_PAGES = 5      # 어차피 표지는 1~2페이지이므로 5장이면 충분
 CLAUDE_MAX_BYTES = 30 * 1024 * 1024  # 30MB
+
+# ── 모델별 API 파라미터 호환성 캐시 (프로세스 내에서만 유지) ──
+# 모델 세대가 바뀌면 일부 옵션이 사라진다 (예: Sonnet 5.5 는 tool_choice 강제 미지원).
+# 새 모델이 나와도 앱이 깨지지 않도록, 400 을 만나면 해당 옵션을 빼고 재시도한 뒤 기억해 둔다.
+# ※ temperature 는 아예 보내지 않는다 — 최신 모델은 기본값 외 temperature 를 거부한다.
+_NO_FORCED_TOOL_MODELS: set[str] = set()
+_NO_FALLBACK_MODELS: set[str] = set()
+
+
+def _create_with_compat(client, model: str, content: list):
+    """모델별 파라미터 지원 차이를 흡수하며 messages.create 를 호출.
+
+    400 은 토큰 과금 전에 즉시 떨어지므로 재시도 비용은 사실상 없다.
+    """
+    import anthropic
+
+    for _ in range(3):  # 뺄 수 있는 옵션 수 + 1
+        kwargs: dict = {
+            "model": model,
+            # 도구 결과로 받지만 모델이 앞서 생각을 쓸 수 있으므로 여유 있게.
+            "max_tokens": 4096,
+            "messages": [{"role": "user", "content": content}],
+            "tools": [EXTRACT_TOOL],
+        }
+        if _supports_effort(model):
+            # 표지에서 몇 개 값만 읽는 단순 작업 — 깊게 생각할 필요 없음 (빠르고 저렴)
+            kwargs["output_config"] = {"effort": "low"}
+        # ★ 도구 호출 강제 (structured output). 강제를 지원하지 않는 모델은 "auto" 로 두되,
+        #   프롬프트에서 도구 호출을 지시하므로 대개 그대로 호출해 준다.
+        if model not in _NO_FORCED_TOOL_MODELS:
+            kwargs["tool_choice"] = {"type": "tool", "name": EXTRACT_TOOL["name"]}
+        use_fallback = model in _FALLBACK_CAPABLE and model not in _NO_FALLBACK_MODELS
+        if use_fallback:
+            # 안전 분류기가 드물게 요청을 거절하면 서버가 다른 모델로 대신 처리 (refusal fallback)
+            kwargs["extra_headers"] = {"anthropic-beta": "server-side-fallback-2026-07-01"}
+            kwargs["extra_body"] = {"fallbacks": "default"}
+
+        try:
+            return client.messages.create(**kwargs)
+        except anthropic.BadRequestError as e:
+            msg = str(e).lower()
+            if "tool_choice" in msg and model not in _NO_FORCED_TOOL_MODELS:
+                _NO_FORCED_TOOL_MODELS.add(model)
+                continue
+            if use_fallback and "credit balance" not in msg:
+                # 계정/플랫폼이 fallback 베타를 지원하지 않는 경우 — 없이 한 번 더
+                _NO_FALLBACK_MODELS.add(model)
+                continue
+            raise
+    raise RuntimeError(f"모델 {model} 에 맞는 호출 옵션을 찾지 못했습니다.")
+
+
+# 추출 결과를 받아내기 위한 도구 스키마.
+# tool_choice 로 이 도구를 강제하면 모델이 반드시 이 형태로 값을 채워 보내므로
+# "JSON 앞에 산문을 쓰다가 잘리는" 문제가 원천적으로 사라진다.
+EXTRACT_TOOL: dict = {
+    "name": "record_document_metadata",
+    "description": "PDF 에서 읽어낸 한국 공문서 메타데이터를 기록한다.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "cover_page": {
+                "type": "string",
+                "description": "공문 표지가 몇 번째 페이지인지 ('1' 또는 '2'). 못 찾으면 '0'",
+            },
+            "doc_type": {
+                "type": "string",
+                "description": "'A'=일반 공문, 'B'=조달청 검사검수요청서. 판별 불가면 '?'",
+            },
+            "title": {
+                "type": "string",
+                "description": "제목. A유형은 '제목:' 줄, B유형은 '검사검수요청서[계약건명]' 형식",
+            },
+            "sender": {
+                "type": "string",
+                "description": "발신 기관/회사명. 주소·사람 이름·공사명은 제외",
+            },
+            "receiver": {
+                "type": "string",
+                "description": "수신 기관명. 직위(장/교육장) 제거",
+            },
+            "doc_no": {
+                "type": "string",
+                "description": "문서번호. A유형은 '시행' 줄 번호, B유형은 검사검수요청번호",
+            },
+            "date": {
+                "type": "string",
+                "description": "시행일자 YYYY-MM-DD 형식",
+            },
+        },
+        "required": [
+            "cover_page", "doc_type", "title",
+            "sender", "receiver", "doc_no", "date",
+        ],
+    },
+}
+
+
+def _parse_json_object(text: str) -> dict:
+    """응답 문자열에서 첫 번째 완결된 JSON 객체를 파싱.
+
+    문자열 리터럴 안의 중괄호/이스케이프까지 고려해 괄호 균형을 맞춰 자른다.
+    (greedy 정규식은 뒤에 설명 문장이 붙으면 실패하므로 직접 스캔)
+    """
+    start = text.find("{")
+    if start == -1:
+        raise ValueError(f"Claude 응답에서 JSON을 찾을 수 없음:\n{text[:500]}")
+
+    depth = 0
+    in_str = False
+    escaped = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_str:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return json.loads(text[start:i + 1])
+
+    raise ValueError(f"Claude 응답의 JSON 이 닫히지 않았습니다:\n{text[:500]}")
 
 
 def _truncate_pdf_if_needed(pdf_path: Path, max_pages: int = CLAUDE_MAX_PAGES,
@@ -316,7 +455,7 @@ def _friendly_error(exc: Exception, model: str) -> str:
     if isinstance(exc, anthropic.PermissionDeniedError):
         return f"이 API 키로는 모델 '{model}' 을(를) 쓸 수 없습니다 — [⚙ 설정] 에서 다른 모델을 고르세요"
     if isinstance(exc, anthropic.NotFoundError):
-        return f"모델 '{model}' 을(를) 찾을 수 없습니다 — [⚙ 설정] → 🔄 새로고침 후 다시 고르세요"
+        return f"모델 '{model}' 을(를) 찾을 수 없습니다 — [⚙ 설정] 에서 다른 모델을 고르세요"
     if isinstance(exc, anthropic.RateLimitError):
         return "요청이 너무 많습니다 (사용량 한도) — 잠시 후 다시 시도하세요"
     if isinstance(exc, anthropic.APIConnectionError):
@@ -347,66 +486,55 @@ def extract_with_claude(pdf_path: Path, model: str | None = None) -> DocMeta | N
     pdf_bytes = _truncate_pdf_if_needed(pdf_path)
     pdf_b64 = base64.standard_b64encode(pdf_bytes).decode("utf-8")
     prompt = PROMPT_TEMPLATE.format(filename=pdf_path.name)
-    params: dict = dict(
-        model=model,
-        # 출력은 메타 JSON 뿐이지만 최신 모델은 답하기 전에 생각(thinking)도 하므로 여유를 둔다.
-        # (512 로 두면 생각하다 잘려서 JSON 이 안 나올 수 있음)
-        max_tokens=4096,
-        # ※ temperature 는 보내지 않는다 — 최신 모델(Sonnet 5.5 등)은 기본값 외 temperature 를
-        #   400 오류로 거부한다. (예전 temperature=0 때문에 매번 실패 → 정규식으로 조용히 대체됐음)
-        messages=[{
-            "role": "user",
-            "content": [
-                {
-                    "type": "document",
-                    "source": {
-                        "type": "base64",
-                        "media_type": "application/pdf",
-                        "data": pdf_b64,
-                    },
-                },
-                {"type": "text", "text": prompt},
-            ],
-        }],
-    )
-    if _supports_effort(model):
-        # 표지에서 몇 개 값만 읽는 단순 작업 — 깊게 생각할 필요 없음 (빠르고 저렴)
-        params["output_config"] = {"effort": "low"}
-    fallback_kw: dict = {}
-    if model in _FALLBACK_CAPABLE:
-        # 안전 분류기가 드물게 요청을 거절하면 서버가 다른 모델로 대신 처리 (refusal fallback)
-        fallback_kw = dict(extra_headers={"anthropic-beta": "server-side-fallback-2026-07-01"},
-                           extra_body={"fallbacks": "default"})
+    content = [
+        {
+            "type": "document",
+            "source": {
+                "type": "base64",
+                "media_type": "application/pdf",
+                "data": pdf_b64,
+            },
+        },
+        {"type": "text", "text": prompt},
+    ]
 
     try:
-        try:
-            resp = client.messages.create(**params, **fallback_kw)
-        except anthropic.BadRequestError:
-            if not fallback_kw:
-                raise
-            # 계정/플랫폼이 fallback 베타를 지원하지 않는 경우 — 없이 한 번 더
-            resp = client.messages.create(**params)
+        resp = _create_with_compat(client, model, content)
     except anthropic.APIError as e:
         raise RuntimeError(_friendly_error(e, model)) from e
 
     if resp.stop_reason == "refusal":
         raise RuntimeError("Claude 가 이 문서 처리를 거절했습니다 — 값을 직접 확인/입력하세요")
-    # 응답 앞부분에 thinking 블록이 올 수 있으므로 text 블록만 모은다
-    text = "".join(b.text for b in resp.content if b.type == "text").strip()
-    if resp.stop_reason == "max_tokens" and "}" not in text:
-        raise RuntimeError("Claude 응답이 중간에 잘렸습니다 — 다시 시도하세요")
-    # 코드블록이나 부가 텍스트가 섞여도 처음 발견되는 JSON 객체 추출
-    m = re.search(r"\{[\s\S]*\}", text)
-    if not m:
-        raise ValueError(f"Claude 응답에서 JSON을 찾을 수 없음:\n{text}")
-    data = json.loads(m.group())
+
+    # 도구 호출 결과(dict) 를 그대로 사용 — JSON 파싱 불필요.
+    data = None
+    for block in resp.content:
+        if getattr(block, "type", None) == "tool_use":
+            data = block.input
+            break
+
+    if data is None:
+        # 도구를 안 쓴 경우(이론상 없음) 텍스트에서 JSON 추출 시도
+        text = "".join(
+            b.text for b in resp.content if getattr(b, "type", None) == "text"
+        )
+        if getattr(resp, "stop_reason", None) == "max_tokens":
+            raise ValueError(
+                f"Claude 응답이 max_tokens 에서 잘렸습니다 (model={model}).\n{text[:400]}"
+            )
+        data = _parse_json_object(text)
+
+    def _s(key: str) -> str:
+        """None/숫자 등이 와도 안전하게 문자열로."""
+        v = data.get(key)
+        return str(v).strip() if v is not None else ""
 
     return DocMeta(
-        title=data.get("title", "").strip(),
-        sender=data.get("sender", "").strip(),
-        receiver=data.get("receiver", "").strip(),
-        doc_no=data.get("doc_no", "").strip(),
-        enforce_date=data.get("date", "").strip(),
+        title=_s("title"),
+        sender=_s("sender"),
+        receiver=_s("receiver"),
+        doc_no=_s("doc_no"),
+        enforce_date=_s("date"),
         source_file=str(pdf_path),
         notes=[f"Claude API ({model})"],
         engine=f"Claude {model_label(model)}",
